@@ -1,0 +1,29 @@
+[package]
+edition = "2024"
+name = "ac-esp"
+version = "0.2.0"
+
+[[bin]]
+name = "ac-esp"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "*"
+eframe = "0.29.1"
+windows = {git = "https://github.com/microsoft/windows-rs", features = [
+  "Win32_System_LibraryLoader",
+  "Win32_System_SystemServices",
+  "Win32_System_Threading",
+  "Win32_System_Diagnostics_Debug",
+  "Win32_System_Diagnostics_ToolHelp",
+  "Win32_Foundation",
+  "Win32_UI_WindowsAndMessaging",
+  "Win32_UI_Input_KeyboardAndMouse",
+  "Win32_Graphics_Gdi",
+]}
+
+[profile.release]
+codegen-units = 1
+lto = true
+panic = "abort"
+strip = true
