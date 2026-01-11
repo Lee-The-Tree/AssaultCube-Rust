@@ -41,6 +41,7 @@ struct AppState {
     aimbot_smoothness: f32,
     aimbot_max_dist: f32,
     aimbot_vis_check: bool,
+    auto_shoot: bool,
     show_fov_circle: bool,
     inf_ammo: bool,
     inf_hp: bool,
@@ -65,8 +66,9 @@ impl Default for AppState {
             aimbot_enabled: false,
             aimbot_fov: 30.0,
             aimbot_smoothness: 5.0,
-            aimbot_max_dist: 100.0,
+            aimbot_max_dist: 150.0,
             aimbot_vis_check: true,
+            auto_shoot: false,
             show_fov_circle: true,
             inf_ammo: false,
             inf_hp: false,
@@ -110,11 +112,12 @@ impl eframe::App for GuiApp {
 
                 ui.separator();
                 ui.heading("Aimbot Settings");
-                ui.checkbox(&mut state.aimbot_enabled, "Enable Aimbot (Hold Right Click)");
+                ui.checkbox(&mut state.aimbot_enabled, "Enable Aimbot (Hold Left Click)");
                 ui.add(egui::Slider::new(&mut state.aimbot_fov, 1.0..=180.0).text("FOV"));
                 ui.add(egui::Slider::new(&mut state.aimbot_smoothness, 1.0..=50.0).text("Smoothness"));
-                ui.add(egui::Slider::new(&mut state.aimbot_max_dist, 10.0..=500.0).text("Max Distance"));
+                ui.add(egui::Slider::new(&mut state.aimbot_max_dist, 10.0..=1000.0).text("Max Distance"));
                 ui.checkbox(&mut state.aimbot_vis_check, "Visibility Check");
+                ui.checkbox(&mut state.auto_shoot, "Auto Shoot (On Lock)");
                 ui.checkbox(&mut state.show_fov_circle, "Show FOV Circle");
 
                 ui.separator();
@@ -362,10 +365,10 @@ fn read_game_data_loop(
 ) {
     let mut last_tick = Instant::now();
     loop {
-        let (is_enabled, aimbot_enabled, aimbot_fov, aimbot_smoothness, aimbot_max_dist, aimbot_vis_check, inf_ammo, inf_hp, no_recoil) = if let Ok(state) = app_state.read() {
-            (state.esp_enabled, state.aimbot_enabled, state.aimbot_fov, state.aimbot_smoothness, state.aimbot_max_dist, state.aimbot_vis_check, state.inf_ammo, state.inf_hp, state.no_recoil)
+        let (is_enabled, aimbot_enabled, aimbot_fov, aimbot_smoothness, aimbot_max_dist, aimbot_vis_check, auto_shoot, inf_ammo, inf_hp, no_recoil) = if let Ok(state) = app_state.read() {
+            (state.esp_enabled, state.aimbot_enabled, state.aimbot_fov, state.aimbot_smoothness, state.aimbot_max_dist, state.aimbot_vis_check, state.auto_shoot, state.inf_ammo, state.inf_hp, state.no_recoil)
         } else {
-            (false, false, 30.0, 5.0, 100.0, true, false, false, false)
+            (false, false, 30.0, 5.0, 150.0, true, false, false, false, false)
         };
 
         let mut window_info = WINDOWINFO::default();
@@ -406,7 +409,7 @@ fn read_game_data_loop(
         let current_yaw = util::read_memory::<f32>(process_handle, local_player_ptr + offset::LOCAL_YAW as usize);
         let current_pitch = util::read_memory::<f32>(process_handle, local_player_ptr + offset::LOCAL_PITCH as usize);
 
-        let mut best_target: Option<(f32, f32)> = None;
+        let mut best_target: Option<(f32, f32, f32)> = None; // yaw, pitch, fov_dist
         let mut closest_fov = aimbot_fov;
         let mut new_draw_rect_list = Vec::new();
         let mut debug_last_vis = 0;
@@ -414,7 +417,8 @@ fn read_game_data_loop(
         if entity_list_base_addr != 0 {
             let view_matrix = util::read_memory::<[f32; 16]>(process_handle, module_base_addr + offset::VIEW_MATRIX as usize);
 
-            for i in 1..player_count {
+            // Loop through 32 slots instead of just player_count to ensure we don't miss anyone
+            for i in 1..32 {
                 let entity_ptr = util::read_memory::<u32>(process_handle, entity_list_base_addr + (i as usize * 4));
                 if entity_ptr == 0 { continue; }
 
@@ -437,7 +441,8 @@ fn read_game_data_loop(
                 if aimbot_enabled && is_enemy && dist <= aimbot_max_dist {
                     let mut can_target = true;
                     if aimbot_vis_check {
-                        if last_vis_frame < current_frame { can_target = false; }
+                        // Relaxed visibility check: allow 2 frames of tolerance
+                        if last_vis_frame + 2 < current_frame { can_target = false; }
                     }
 
                     if can_target {
@@ -460,7 +465,7 @@ fn read_game_data_loop(
                             closest_fov = fov_dist;
                             let smooth_yaw = current_yaw + (yaw_diff / aimbot_smoothness);
                             let smooth_pitch = current_pitch + (pitch_diff / aimbot_smoothness);
-                            best_target = Some((smooth_yaw, smooth_pitch));
+                            best_target = Some((smooth_yaw, smooth_pitch, fov_dist));
                         }
                     }
                 }
@@ -500,14 +505,24 @@ fn read_game_data_loop(
             }
         }
 
-        // Apply Aimbot
+        // Apply Aimbot and Auto Shoot
         if aimbot_enabled {
-            let right_click = unsafe { GetAsyncKeyState(VK_RBUTTON.0 as i32) } as u16 & 0x8000 != 0;
-            if right_click {
-                if let Some((yaw, pitch)) = best_target {
+            let left_click = unsafe { GetAsyncKeyState(VK_LBUTTON.0 as i32) } as u16 & 0x8000 != 0;
+            if left_click {
+                if let Some((yaw, pitch, fov_dist)) = best_target {
                     util::write_memory::<f32>(process_handle, local_player_ptr + offset::LOCAL_YAW as usize, yaw);
                     util::write_memory::<f32>(process_handle, local_player_ptr + offset::LOCAL_PITCH as usize, pitch);
+
+                    if auto_shoot && fov_dist < 1.0 {
+                        util::write_memory::<u8>(process_handle, local_player_ptr + offset::ENTITY_SHOOTING as usize, 1);
+                    } else if auto_shoot {
+                        util::write_memory::<u8>(process_handle, local_player_ptr + offset::ENTITY_SHOOTING as usize, 0);
+                    }
+                } else if auto_shoot {
+                    util::write_memory::<u8>(process_handle, local_player_ptr + offset::ENTITY_SHOOTING as usize, 0);
                 }
+            } else if auto_shoot {
+                util::write_memory::<u8>(process_handle, local_player_ptr + offset::ENTITY_SHOOTING as usize, 0);
             }
         }
 

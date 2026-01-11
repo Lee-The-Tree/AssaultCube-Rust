@@ -12,6 +12,7 @@ pub const ENTITY_NAME: u32 = 0x205;
 pub const ENTITY_TEAM: u32 = 0x30C;
 pub const ENTITY_LAST_VIS_FRAME: u32 = 0xE4;
 pub const ENTITY_AMMO: u32 = 0x140;
+pub const ENTITY_SHOOTING: u32 = 0x204; // Shooting state offset
 
 pub const CURRENT_FRAME: u32 = 0x17F10C; // Based on dword_57F10C (0x57F10C - 0x400000)
 
